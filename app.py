@@ -327,7 +327,15 @@ class PricePredictionSystem:
         
         # If we don't have enough historical data, load default historical data
         if len(self.price_data) < 100:  # We need at least 100 records for training the model
+            logger.info("Not enough historical data. Loading default historical data...")
             self._load_default_historical_data()
+            
+            # Verify we have enough data for each asset
+            for asset in self.assets:
+                asset_data = self.price_data[self.price_data['asset'] == asset]
+                if len(asset_data) < 20:  # Minimum 20 data points needed for each asset
+                    logger.warning(f"Still not enough data for {asset} after loading default data. Fetching more historical data...")
+                    self._fetch_additional_historical_data(asset)
     
     def _load_default_historical_data(self):
         """Load default historical data for starting the work"""
@@ -375,6 +383,56 @@ class PricePredictionSystem:
         price_query = "SELECT timestamp, asset, price FROM prices ORDER BY timestamp DESC"
         self.price_data = pd.read_sql_query(price_query, conn)
         conn.close()
+    
+    def _fetch_additional_historical_data(self, asset):
+        """Fetch additional historical data for a specific asset"""
+        logger.info(f"Fetching additional historical data for {asset}...")
+        
+        end_date = datetime.datetime.now()
+        start_date = end_date - datetime.timedelta(days=365)  # One year of historical data
+        
+        try:
+            if asset == 'XAU/USD':
+                ticker = 'GC=F'
+            elif asset == 'BTC/USD':
+                ticker = 'BTC-USD'
+            elif asset == 'EUR/USD':
+                ticker = 'EURUSD=X'
+            elif asset == 'BRENT':
+                ticker = 'BZ=F'
+            elif asset == 'USD/IRR':
+                # For USD/IRR, we'll use a longer period to get more data
+                start_date = end_date - datetime.timedelta(days=730)  # Two years
+                ticker = None  # We'll handle this separately
+            else:
+                return
+            
+            if ticker:
+                # Fetch data from Yahoo Finance
+                data = yf.download(ticker, start=start_date, end=end_date)
+                
+                # Convert data to the required format
+                price_rows = []
+                for index, row in data.iterrows():
+                    price_rows.append({
+                        'timestamp': index,
+                        'asset': asset,
+                        'price': row['Close']
+                    })
+                
+                # Save data to database
+                self._save_prices_to_db(price_rows)
+                logger.info(f"Added {len(price_rows)} historical records for {asset}")
+            
+            # Reload price data from database
+            import sqlite3
+            conn = sqlite3.connect(self.db_path)
+            price_query = "SELECT timestamp, asset, price FROM prices ORDER BY timestamp DESC"
+            self.price_data = pd.read_sql_query(price_query, conn)
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error fetching additional historical data for {asset}: {str(e)}")
     
     def prepare_features(self, asset):
         """Prepare features for training and prediction"""
@@ -449,12 +507,19 @@ class PricePredictionSystem:
         """Train prediction models for each asset"""
         logger.info("Training models...")
         
+        # Verify we have enough data for each asset
+        for asset in self.assets:
+            asset_data = self.price_data[self.price_data['asset'] == asset]
+            if len(asset_data) < 20:  # Minimum 20 data points needed
+                logger.warning(f"Not enough data for {asset}. Fetching more historical data...")
+                self._fetch_additional_historical_data(asset)
+        
         for asset in self.assets:
             try:
                 features, target = self.prepare_features(asset)
                 
                 if features is None or len(features) < 10:
-                    logger.warning(f"Not enough data for training model {asset}.")
+                    logger.warning(f"Not enough data for training model {asset}. Skipping...")
                     continue
                 
                 # Split data into training and testing sets
@@ -672,8 +737,16 @@ class PricePredictionSystem:
             # Get current prices
             self.fetch_asset_prices()
             
-            # Train models
-            self.train_models()
+            # Train models if they don't exist
+            if not self.models:
+                logger.info("No models found. Training new models...")
+                self.train_models()
+            else:
+                # Check if any models are missing
+                missing_models = [asset for asset in self.assets if asset not in self.models]
+                if missing_models:
+                    logger.info(f"Missing models for assets: {missing_models}. Training missing models...")
+                    self.train_models()
             
             # Predict prices
             predictions = self.predict_prices()
@@ -701,7 +774,7 @@ class PricePredictionSystem:
         self.run_scheduled_task()
         
         # Set up periodic execution every 60 minutes
-        schedule.every(60).minutes.do(self.run_scheduled_task)
+        schedule.every(1).minutes.do(self.run_scheduled_task)
         
         logger.info("Scheduler set up successfully. Tasks will run every 60 minutes.")
         
