@@ -1,3 +1,7 @@
+# Install required packages
+!pip install schedule yfinance textblob nltk pandas numpy requests beautifulsoup4 scikit-learn keras matplotlib
+
+# Import required libraries
 import pandas as pd
 import numpy as np
 import requests
@@ -21,6 +25,15 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 from textblob import TextBlob
 import hashlib
+import os
+from google.colab import drive
+
+# Mount Google Drive (optional, if you want to save data to Drive)
+try:
+    drive.mount('/content/drive')
+    print("Google Drive mounted successfully!")
+except:
+    print("Could not mount Google Drive. Using local storage.")
 
 # Configure logging
 logging.basicConfig(
@@ -54,7 +67,14 @@ class PricePredictionSystem:
             {'name': 'Financial Times', 'url': 'https://www.ft.com/markets'},
             {'name': 'BBC', 'url': 'https://www.bbc.com/news/business'}
         ]
-        self.db_path = 'financial_data.db'
+        
+        # Use Google Drive path if mounted, otherwise use local path
+        try:
+            self.db_path = '/content/drive/MyDrive/financial_data.db'
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        except:
+            self.db_path = 'financial_data.db'
+            
         self.setup_database()
         self.load_historical_data()
         logger.info("Price prediction system initialized.")
@@ -69,7 +89,7 @@ class PricePredictionSystem:
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS news (
             id TEXT PRIMARY KEY,
-            timestamp DATETIME,
+            timestamp TEXT,
             title TEXT,
             summary TEXT,
             source TEXT,
@@ -82,7 +102,7 @@ class PricePredictionSystem:
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS prices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME,
+            timestamp TEXT,
             asset TEXT,
             price REAL
         )
@@ -92,7 +112,7 @@ class PricePredictionSystem:
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME,
+            timestamp TEXT,
             asset TEXT,
             predicted_price REAL,
             confidence REAL
@@ -181,9 +201,16 @@ class PricePredictionSystem:
         
         for item in news_items:
             try:
+                # Convert timestamp to string format
+                timestamp = item['timestamp']
+                if isinstance(timestamp, pd.Timestamp):
+                    timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(timestamp, datetime.datetime):
+                    timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                
                 cursor.execute(
                     "INSERT OR IGNORE INTO news (id, timestamp, title, summary, source, url, sentiment) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (item['id'], item['timestamp'], item['title'], item['summary'], item['source'], item['url'], item['sentiment'])
+                    (item['id'], timestamp, item['title'], item['summary'], item['source'], item['url'], item['sentiment'])
                 )
             except Exception as e:
                 logger.error(f"Error saving news item: {str(e)}")
@@ -299,9 +326,16 @@ class PricePredictionSystem:
         
         for item in price_items:
             try:
+                # Convert timestamp to string format if it's a pandas Timestamp
+                timestamp = item['timestamp']
+                if isinstance(timestamp, pd.Timestamp):
+                    timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(timestamp, datetime.datetime):
+                    timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                
                 cursor.execute(
                     "INSERT INTO prices (timestamp, asset, price) VALUES (?, ?, ?)",
-                    (item['timestamp'], item['asset'], item['price'])
+                    (timestamp, item['asset'], item['price'])
                 )
             except Exception as e:
                 logger.error(f"Error saving asset price: {str(e)}")
@@ -639,9 +673,16 @@ class PricePredictionSystem:
         cursor = conn.cursor()
         
         try:
+            # Convert timestamp to string format
+            timestamp = prediction['timestamp']
+            if isinstance(timestamp, pd.Timestamp):
+                timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            elif isinstance(timestamp, datetime.datetime):
+                timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            
             cursor.execute(
                 "INSERT INTO predictions (timestamp, asset, predicted_price, confidence) VALUES (?, ?, ?, ?)",
-                (prediction['timestamp'], prediction['asset'], prediction['predicted_price'], prediction['confidence'])
+                (timestamp, prediction['asset'], prediction['predicted_price'], prediction['confidence'])
             )
             conn.commit()
         except Exception as e:
@@ -723,9 +764,17 @@ class PricePredictionSystem:
         plt.legend()
         plt.grid(True)
         
-        # Save plot
-        plt.savefig('price_predictions.png')
-        logger.info("Price prediction plot saved successfully.")
+        # Save plot to Google Drive if mounted, otherwise save locally
+        try:
+            plot_path = '/content/drive/MyDrive/price_predictions.png'
+            plt.savefig(plot_path)
+            logger.info(f"Price prediction plot saved to {plot_path}")
+        except:
+            plt.savefig('price_predictions.png')
+            logger.info("Price prediction plot saved locally")
+        
+        # Display the plot in Colab
+        plt.show()
     
     def run_scheduled_task(self):
         """Run scheduled tasks"""
@@ -973,8 +1022,10 @@ def main():
     prediction_system = PricePredictionSystem()
     
     try:
-        # Start scheduling
-        prediction_system.start_scheduler()
+        # Run the prediction task once
+        predictions, report = prediction_system.run_scheduled_task()
+        print("\nPrediction Report:")
+        print(report)
         
     except KeyboardInterrupt:
         logger.info("Program stopped by user.")
